@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BurgerTIC</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍔</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header__inner">
+            <a href="#/menu" class="logo">🍔 Burger<span>TIC</span></a>
+            <nav class="nav" id="nav"></nav>
+            <button class="btn-carrito" id="btn-carrito" type="button" aria-label="Ver carrito">
+                🛒 <span class="btn-carrito__count" id="carrito-count">0</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="main" id="app"></main>
+
+    <!-- Carrito (panel lateral) -->
+    <div class="overlay" id="overlay" hidden></div>
+    <aside class="carrito" id="carrito" aria-label="Carrito" aria-hidden="true">
+        <div class="carrito__head">
+            <h2>Tu pedido</h2>
+            <button class="icon-btn" id="cerrar-carrito" type="button" aria-label="Cerrar carrito">✕</button>
+        </div>
+        <div class="carrito__items" id="carrito-items"></div>
+        <div class="carrito__foot">
+            <div class="carrito__total">
+                <span>Total</span>
+                <strong id="carrito-total">$0</strong>
+            </div>
+            <button class="btn btn--primary btn--block" id="btn-confirmar" type="button">Confirmar pedido</button>
+        </div>
+    </aside>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { conectarDB } from "./db.js";
 import { HttpError } from "./utils/HttpError.js";
 import platosRoutes from "./routes/platos.routes.js";
@@ -15,9 +17,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-app.get("/", (req, res) => {
-    res.status(200).json({ message: "API de BurgerTIC funcionando" });
-});
+// Front-end: sirve public/ (index.html, styles.css, app.js) en la raíz.
+// Solo responde si el archivo existe, así que no pisa las rutas de la API.
+app.use(express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), "public")));
 
 app.use("/platos", platosRoutes);
 app.use("/auth", authRoutes);
