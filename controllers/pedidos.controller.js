@@ -1,6 +1,6 @@
 import * as pedidosService from "../services/pedidos.service.js";
 import { HttpError } from "../utils/HttpError.js";
-import { parseId, validarBody, esEnteroPositivo } from "../utils/validaciones.js";
+import { parseId, validarBody, esEnteroPositivo, validarString } from "../utils/validaciones.js";
 import { BEBIDAS_COMBO } from "../db.js";
 
 const validarPlatosPedido = (body) => {
@@ -51,11 +51,35 @@ export const getPedidoById = async (req, res) => {
     res.status(200).json(pedido);
 };
 
+// Texto opcional: undefined / null / "" -> null
+const textoOpcional = (valor, campo, max) =>
+    valor === undefined || valor === null || (typeof valor === "string" && valor.trim() === "")
+        ? null
+        : validarString(valor, campo, max);
+
+const validarEntrega = (body) => {
+    if (body.direccion === undefined || body.direccion === null || body.direccion === "") {
+        throw new HttpError(400, 'Falta el campo obligatorio "direccion" (dirección de entrega)');
+    }
+    const direccion = validarString(body.direccion, "direccion", 200);
+    if (direccion.length < 5) throw new HttpError(400, "La dirección de entrega es demasiado corta");
+    return { direccion, comentario: textoOpcional(body.comentario, "comentario", 200) };
+};
+
 export const createPedido = async (req, res) => {
     const platos = validarPlatosPedido(req.body);
+    const entrega = validarEntrega(req.body);
     // El id del usuario sale SIEMPRE del token, nunca del body
-    const pedido = await pedidosService.createPedido(req.usuario.id, platos);
+    const pedido = await pedidosService.createPedido(req.usuario.id, platos, entrega);
     res.status(201).json(pedido);
+};
+
+// PUT /pedidos/:id/cancelar  body opcional: { motivo }
+export const cancelarPedido = async (req, res) => {
+    const id = parseId(req.params.id);
+    const motivo = textoOpcional(req.body?.motivo, "motivo", 200);
+    const pedido = await pedidosService.cancelarPedido(id, motivo);
+    res.status(200).json({ message: `Pedido ${id} cancelado. Se le avisó al cliente.`, pedido });
 };
 
 const cambiarEstado = (estado) => async (req, res) => {

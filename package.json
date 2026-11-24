@@ -1,7 +1,7 @@
 {
-  "name": "burgertic-api",
-  "version": "1.0.0",
-  "description": "REST API para el restaurant de comida rápida BurgerTIC",
+  "name": "hamburguesas-el-ciclon",
+  "version": "2.0.0",
+  "description": "Hamburguesas El Ciclón: API REST y web de pedidos de la hamburguesería del club",
   "main": "index.js",
   "type": "module",
   "scripts": {

@@ -17,6 +17,7 @@ router.get("/:id", verificarAdmin, pedidosController.getPedidoById);
 router.put("/:id/aceptar", verificarAdmin, pedidosController.aceptarPedido);
 router.put("/:id/comenzar", verificarAdmin, pedidosController.comenzarPedido);
 router.put("/:id/entregar", verificarAdmin, pedidosController.entregarPedido);
+router.put("/:id/cancelar", verificarAdmin, pedidosController.cancelarPedido);
 router.delete("/:id", verificarAdmin, pedidosController.deletePedido);
 
 export default router;

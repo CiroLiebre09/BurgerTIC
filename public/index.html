@@ -3,42 +3,70 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>BurgerTIC</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍔</text></svg>">
+    <title>Hamburguesas El Ciclón</title>
+    <meta name="description" content="Hamburguesas grandes como tu pasión por San Lorenzo. Pedí online tus combos y postres.">
+    <meta name="theme-color" content="#0b2d6b">
+    <link rel="icon" type="image/svg+xml" href="logo.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <header class="header">
+        <div class="header__franja" aria-hidden="true"></div>
         <div class="header__inner">
-            <a href="#/menu" class="logo">🍔 Burger<span>TIC</span></a>
+            <a href="#/menu" class="logo" aria-label="Hamburguesas El Ciclón - inicio">
+                <img src="logo.svg" alt="" width="48" height="48">
+                <span class="logo__texto">
+                    <small>Hamburguesas</small>
+                    <strong>El Ciclón</strong>
+                </span>
+            </a>
             <nav class="nav" id="nav"></nav>
-            <button class="btn-carrito" id="btn-carrito" type="button" aria-label="Ver carrito">
-                🛒 <span class="btn-carrito__count" id="carrito-count">0</span>
-            </button>
+            <div class="header__acciones">
+                <div class="notif" id="notif" hidden>
+                    <button class="icon-circle" id="btn-notif" type="button" aria-label="Notificaciones" aria-expanded="false">
+                        🔔 <span class="badge-count" id="notif-count" hidden>0</span>
+                    </button>
+                    <div class="notif__panel" id="notif-panel" hidden></div>
+                </div>
+                <button class="btn-carrito" id="btn-carrito" type="button" aria-label="Ver mi pedido">
+                    🛒 <span class="btn-carrito__count" id="carrito-count">0</span>
+                </button>
+            </div>
         </div>
+        <div class="promo-banner" id="promo-banner" hidden></div>
     </header>
 
     <main class="main" id="app"></main>
 
+    <footer class="footer">
+        <img src="logo.svg" alt="" width="40" height="40">
+        <p><strong>Hamburguesas El Ciclón</strong><br>Hamburguesas grandes como tu pasión por San Lorenzo 💙❤️</p>
+    </footer>
+
     <!-- Carrito (panel lateral) -->
     <div class="overlay" id="overlay" hidden></div>
-    <aside class="carrito" id="carrito" aria-label="Carrito" aria-hidden="true">
+    <aside class="carrito" id="carrito" aria-label="Tu pedido" aria-hidden="true">
         <div class="carrito__head">
             <h2>Tu pedido</h2>
-            <button class="icon-btn" id="cerrar-carrito" type="button" aria-label="Cerrar carrito">✕</button>
+            <button class="icon-btn" id="cerrar-carrito" type="button" aria-label="Cerrar">✕</button>
         </div>
         <div class="carrito__items" id="carrito-items"></div>
-        <div class="carrito__foot">
-            <div class="carrito__total">
-                <span>Total</span>
-                <strong id="carrito-total">$0</strong>
-            </div>
+        <div class="carrito__foot" id="carrito-foot">
+            <div class="carrito__resumen" id="carrito-resumen"></div>
+            <label>Dirección de entrega
+                <input id="entrega-direccion" maxlength="200" autocomplete="street-address" placeholder="Calle, número, piso/depto">
+            </label>
+            <label>Aclaraciones <span class="opcional">(opcional)</span>
+                <input id="entrega-comentario" maxlength="200" placeholder="Ej: tocar timbre 3B, sin cebolla">
+            </label>
             <button class="btn btn--primary btn--block" id="btn-confirmar" type="button">Confirmar pedido</button>
         </div>
     </aside>
+
+    <dialog class="modal" id="modal"></dialog>
 
     <div class="toasts" id="toasts" aria-live="polite"></div>
 

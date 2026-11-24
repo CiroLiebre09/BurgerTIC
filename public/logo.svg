@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Cuervo agarrando una hamburguesa">
+  <!-- Escudo: aro azul y rojo sobre fondo blanco -->
+  <circle cx="60" cy="60" r="56" fill="#ffffff" stroke="#0b2d6b" stroke-width="7"/>
+  <circle cx="60" cy="60" r="48" fill="none" stroke="#c8102e" stroke-width="3.5"/>
+
+  <!-- Cola -->
+  <path d="M32 72 L9 84 L17 88 L11 98 L38 86 Z" fill="#141414"/>
+  <!-- Cuerpo -->
+  <ellipse cx="50" cy="72" rx="26" ry="22" fill="#141414"/>
+  <!-- Patas -->
+  <path d="M45 92 v9 M55 92 v9" stroke="#f2b705" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Cabeza -->
+  <circle cx="69" cy="43" r="16" fill="#141414"/>
+  <!-- Pico -->
+  <path d="M82 38 L103 46 L82 52 Z" fill="#f2b705"/>
+  <path d="M82 45 L103 46" stroke="#c98f00" stroke-width="1.2"/>
+  <!-- Ojo y ceja -->
+  <circle cx="73" cy="40" r="5.2" fill="#ffffff"/>
+  <circle cx="74.6" cy="40.4" r="2.5" fill="#141414"/>
+  <path d="M66 33 L80 36" stroke="#c8102e" stroke-width="3.2" stroke-linecap="round"/>
+
+  <!-- Hamburguesa -->
+  <g>
+    <path d="M57 76 Q73 58 89 76 Z" fill="#e39a3b"/>
+    <ellipse cx="68" cy="70" rx="1.6" ry="0.9" fill="#fff3d6"/>
+    <ellipse cx="75" cy="67" rx="1.6" ry="0.9" fill="#fff3d6"/>
+    <ellipse cx="81" cy="71" rx="1.6" ry="0.9" fill="#fff3d6"/>
+    <path d="M56 76 L60 80 L64 76.5 L68 80 L72 76.5 L76 80 L80 76.5 L84 80 L90 76 L90 79.5 L56 79.5 Z" fill="#3cb44b"/>
+    <path d="M56 79 H90 L84 83 L80 79.5 Z" fill="#ffd23f"/>
+    <rect x="56" y="81" width="34" height="7" rx="3.5" fill="#6b3a1e"/>
+    <path d="M56 88 H90 Q90 96 82 96 H64 Q56 96 56 88 Z" fill="#e39a3b"/>
+  </g>
+
+  <!-- Ala que agarra la hamburguesa -->
+  <path d="M36 64 Q60 60 66 86 Q52 93 38 82 Z" fill="#2a2a2a"/>
+  <path d="M63 84 l5 6 M59 87 l4 6 M55 88 l2.5 6" stroke="#2a2a2a" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

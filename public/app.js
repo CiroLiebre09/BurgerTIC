@@ -1,20 +1,36 @@
 /* =========================================================
-   BurgerTIC - Front-end
+   Hamburguesas El Ciclón - Front-end
    Se sirve desde el mismo Express que la API, por eso las
-   requests van a rutas relativas (/platos, /auth, /pedidos).
+   requests van a rutas relativas (/platos, /auth, /pedidos...).
    ========================================================= */
 
-const TIPOS = ["principal", "combo", "postre"];
-const ESTADOS = ["pendiente", "aceptado", "en camino", "entregado"];
-const EMOJI_TIPO = { principal: "🍔", combo: "🍟", postre: "🍦" };
+const TIPOS = ["combo", "postre"];
+const TIPO_INFO = {
+    combo: { plural: "Combos", singular: "Combo", emoji: "🍔" },
+    postre: { plural: "Postres", singular: "Postre", emoji: "🍨" },
+};
+const ESTADOS = ["pendiente", "aceptado", "en camino", "entregado"]; // flujo normal
 const BEBIDAS_COMBO = ["Agua", "Pepsi", "Mirinda", "Seven Up"]; // mismas que en el back (db.js)
+
+// Promociones que puede activar el admin (las claves coinciden con PROMOCIONES de db.js)
+const PROMOS_UI = [
+    { clave: "dia_partido", titulo: "Día de partido", detalle: "20% OFF en todo el menú", emoji: "⚽" },
+    { clave: "gano_ciclon", titulo: "Ganó el Ciclón", detalle: "50% OFF en todo el menú", emoji: "🏆" },
+];
 
 // Acción de admin disponible según el estado actual del pedido
 const SIGUIENTE_ACCION = {
-    pendiente: { ruta: "aceptar", texto: "Aceptar" },
-    aceptado: { ruta: "comenzar", texto: "Enviar (en camino)" },
+    pendiente: { ruta: "aceptar", texto: "Aceptar pedido" },
+    aceptado: { ruta: "comenzar", texto: "Despachar (en camino)" },
     "en camino": { ruta: "entregar", texto: "Marcar entregado" },
 };
+
+const MOTIVOS_CANCELACION = [
+    "Nos quedamos sin stock",
+    "La dirección está fuera de la zona de entrega",
+    "El cliente pidió cancelar",
+    "No pudimos contactar al cliente",
+];
 
 /* ---------------- Utilidades ---------------- */
 
@@ -31,6 +47,16 @@ const fecha = (iso) => {
     if (!iso) return "";
     const [a, m, d] = String(iso).split("-");
     return `${d}/${m}/${a}`;
+};
+
+const hora = (iso) => (iso ? new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) : "");
+
+const haceCuanto = (iso) => {
+    const seg = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+    if (seg < 60) return "recién";
+    if (seg < 3600) return `hace ${Math.floor(seg / 60)} min`;
+    if (seg < 86400) return `hace ${Math.floor(seg / 3600)} h`;
+    return new Date(iso).toLocaleDateString("es-AR");
 };
 
 const claseEstado = (estado) => "estado estado--" + String(estado).replace(/\s+/g, "-");
@@ -56,19 +82,27 @@ const storage = {
     },
 };
 
-function toast(mensaje, tipo = "info") {
+function toast(mensaje, tipo = "info", ms = 4000) {
     const el = document.createElement("div");
     el.className = `toast toast--${tipo}`;
     el.textContent = mensaje;
     $("#toasts").appendChild(el);
-    setTimeout(() => el.remove(), 4000);
+    setTimeout(() => el.remove(), ms);
 }
+
+// Intervalos de la vista actual: se cortan al cambiar de pantalla
+let timersVista = [];
+const cadaTanto = (ms, fn) => timersVista.push(setInterval(fn, ms));
+const cortarTimersVista = () => {
+    timersVista.forEach(clearInterval);
+    timersVista = [];
+};
 
 /* ---------------- Sesión ---------------- */
 
 const sesion = {
-    token: storage.get("burgertic_token"),
-    usuario: storage.get("burgertic_usuario"),
+    token: storage.get("ciclon_token"),
+    usuario: storage.get("ciclon_usuario"),
     timer: null,
 };
 
@@ -105,17 +139,19 @@ function programarExpiracion() {
 function iniciarSesion(token, usuario) {
     sesion.token = token;
     sesion.usuario = usuario;
-    storage.set("burgertic_token", token);
-    storage.set("burgertic_usuario", usuario);
+    storage.set("ciclon_token", token);
+    storage.set("ciclon_usuario", usuario);
     programarExpiracion();
+    iniciarNotificaciones();
 }
 
 function cerrarSesion() {
     sesion.token = null;
     sesion.usuario = null;
     clearTimeout(sesion.timer);
-    storage.remove("burgertic_token");
-    storage.remove("burgertic_usuario");
+    storage.remove("ciclon_token");
+    storage.remove("ciclon_usuario");
+    detenerNotificaciones();
     renderNav();
 }
 
@@ -162,18 +198,41 @@ async function api(ruta, { method = "GET", body } = {}) {
     return data;
 }
 
+/* ---------------- Promoción vigente ---------------- */
+
+let promo = { promocion: null, nombre: null, descuento: 0 };
+
+function renderPromoBanner() {
+    const el = $("#promo-banner");
+    const info = PROMOS_UI.find((p) => p.clave === promo.promocion);
+    if (!info) {
+        el.hidden = true;
+        return;
+    }
+    el.innerHTML = `<strong>${info.emoji} ${esc(info.titulo)}</strong> ${promo.descuento}% OFF en todo el menú`;
+    el.hidden = false;
+}
+
+async function cargarPromo() {
+    try {
+        promo = await api("/promocion");
+    } catch { /* si falla, seguimos sin banner */ }
+    renderPromoBanner();
+}
+
 /* ---------------- Carrito ---------------- */
-// [{ key, id, nombre, precio, cantidad, bebida }]
+// [{ key, id, nombre, precio, precio_lista, cantidad, bebida }]
+// precio = lo que se paga por unidad (con descuento); precio_lista = precio sin descuento.
 // Un mismo combo con distinta bebida ocupa renglones distintos, por eso cada renglón
 // se identifica por key = "id|bebida" y no solo por el id del plato.
 const claveItem = (id, bebida) => `${id}|${bebida ?? ""}`;
 
-let carrito = storage.get("burgertic_carrito", []);
+let carrito = storage.get("ciclon_carrito", []);
 if (!Array.isArray(carrito)) carrito = [];
 carrito.forEach((i) => (i.key = claveItem(i.id, i.bebida)));
 
 const guardarCarrito = () => {
-    storage.set("burgertic_carrito", carrito);
+    storage.set("ciclon_carrito", carrito);
     renderCarrito();
 };
 
@@ -187,21 +246,58 @@ function cambiarCantidad(plato, delta, bebida = null) {
         item.cantidad += delta;
         if (item.cantidad <= 0) carrito = carrito.filter((i) => i.key !== key);
     } else if (delta > 0) {
-        carrito.push({ key, id: plato.id, nombre: plato.nombre, precio: plato.precio, cantidad: delta, bebida });
+        carrito.push({
+            key,
+            id: plato.id,
+            nombre: plato.nombre,
+            precio: plato.precio_final ?? plato.precio,
+            precio_lista: plato.precio,
+            cantidad: delta,
+            bebida,
+        });
     }
     guardarCarrito();
+}
+
+// Actualiza precios del carrito con la última info del menú y saca lo que ya no se puede pedir
+function sincronizarCarrito(platos) {
+    const quitados = [];
+    carrito = carrito.filter((item) => {
+        const p = platos.find((pl) => pl.id === item.id);
+        if (!p || !p.disponible) {
+            quitados.push(item.nombre);
+            return false;
+        }
+        item.nombre = p.nombre;
+        item.precio = p.precio_final ?? p.precio;
+        item.precio_lista = p.precio;
+        return true;
+    });
+    guardarCarrito();
+    if (quitados.length) {
+        toast(`Sacamos de tu pedido lo que ya no está disponible: ${[...new Set(quitados)].join(", ")}`, "error", 6000);
+    }
 }
 
 function renderCarrito() {
     const totalItems = carrito.reduce((a, i) => a + i.cantidad, 0);
     const total = carrito.reduce((a, i) => a + i.precio * i.cantidad, 0);
+    const subtotal = carrito.reduce((a, i) => a + (i.precio_lista ?? i.precio) * i.cantidad, 0);
     $("#carrito-count").textContent = totalItems;
-    $("#carrito-total").textContent = precio(total);
     $("#btn-confirmar").disabled = carrito.length === 0;
+    $("#carrito-foot").hidden = carrito.length === 0;
+
+    const ahorro = subtotal - total;
+    $("#carrito-resumen").innerHTML = `
+        ${ahorro > 0
+            ? `<div class="fila"><span>Subtotal</span><span>${precio(subtotal)}</span></div>
+               <div class="fila fila--descuento"><span>${esc(promo.nombre ?? "Descuento")} (-${promo.descuento}%)</span><span>−${precio(ahorro)}</span></div>`
+            : ""}
+        <div class="fila fila--total"><span>Total</span><span>${precio(total)}</span></div>`;
 
     const cont = $("#carrito-items");
     if (carrito.length === 0) {
-        cont.innerHTML = `<div class="vacio"><span class="emoji">🛒</span>Todavía no agregaste platos</div>`;
+        cont.innerHTML = `<div class="vacio"><span class="emoji">🛒</span>Todavía no agregaste nada.<br>¡Mirá el menú y armá tu pedido!</div>`;
         return;
     }
     cont.innerHTML = carrito
@@ -247,6 +343,9 @@ $("#carrito-items").addEventListener("click", (e) => {
     }
 });
 
+// La dirección se recuerda para el próximo pedido
+$("#entrega-direccion").value = storage.get("ciclon_direccion", "") || "";
+
 $("#btn-confirmar").addEventListener("click", async () => {
     if (carrito.length === 0) return;
     if (!estaLogueado()) {
@@ -255,29 +354,161 @@ $("#btn-confirmar").addEventListener("click", async () => {
         location.hash = "#/login";
         return;
     }
+    const direccion = $("#entrega-direccion").value.trim();
+    const comentario = $("#entrega-comentario").value.trim();
+    if (direccion.length < 5) {
+        toast("Ingresá la dirección de entrega", "error");
+        $("#entrega-direccion").focus();
+        return;
+    }
+
     const btn = $("#btn-confirmar");
     btn.disabled = true;
     btn.textContent = "Enviando...";
     try {
-        // El body es { platos: [{ id, cantidad, bebida? }] }. Fecha, estado y usuario los pone el back.
+        // El precio final lo calcula el back con la promoción vigente
         const pedido = await api("/pedidos", {
             method: "POST",
             body: {
                 platos: carrito.map(({ id, cantidad, bebida }) => (bebida ? { id, cantidad, bebida } : { id, cantidad })),
+                direccion,
+                ...(comentario ? { comentario } : {}),
             },
         });
+        storage.set("ciclon_direccion", direccion);
+        $("#entrega-comentario").value = "";
         carrito = [];
         guardarCarrito();
         cerrarCarrito();
-        toast(`¡Pedido #${pedido.id} realizado! Total ${precio(pedido.total)}`, "success");
+        toast(`¡Pedido #${pedido.id} recibido! Total ${precio(pedido.total)}. Te avisamos cuando lo aceptemos.`, "success", 6000);
         location.hash = "#/mis-pedidos";
     } catch (err) {
-        toast(err.message, "error");
+        toast(err.message, "error", 6000);
+        // Puede haber cambiado la disponibilidad o el precio: refrescamos el carrito
+        api("/platos").then(sincronizarCarrito).catch(() => {});
     } finally {
         btn.textContent = "Confirmar pedido";
         btn.disabled = carrito.length === 0;
     }
 });
+
+/* ---------------- Notificaciones del cliente ---------------- */
+
+const notifs = { lista: [], noLeidas: 0, avisadas: new Set(), timer: null, alNotificar: null };
+
+function iniciarNotificaciones() {
+    detenerNotificaciones();
+    if (!estaLogueado() || esAdmin()) return;
+    $("#notif").hidden = false;
+    cargarNotificaciones();
+    notifs.timer = setInterval(cargarNotificaciones, 15000);
+}
+
+function detenerNotificaciones() {
+    clearInterval(notifs.timer);
+    notifs.timer = null;
+    notifs.lista = [];
+    notifs.noLeidas = 0;
+    notifs.avisadas.clear();
+    $("#notif").hidden = true;
+    $("#notif-panel").hidden = true;
+}
+
+async function cargarNotificaciones() {
+    if (!estaLogueado() || esAdmin()) return;
+    try {
+        const r = await api("/notificaciones");
+        notifs.lista = r.notificaciones;
+        notifs.noLeidas = r.no_leidas;
+
+        // Las no leídas que todavía no mostramos en esta sesión aparecen como aviso
+        const nuevas = r.notificaciones.filter((n) => !n.leida && !notifs.avisadas.has(n.id));
+        nuevas.forEach((n) => notifs.avisadas.add(n.id));
+        nuevas
+            .slice(0, 3)
+            .reverse()
+            .forEach((n) => toast(`🔔 ${n.mensaje}`, n.tipo === "alerta" ? "error" : n.tipo === "exito" ? "success" : "info", 8000));
+        if (nuevas.length && notifs.alNotificar) notifs.alNotificar();
+
+        renderNotificaciones();
+    } catch { /* se reintenta en el próximo ciclo */ }
+}
+
+function renderNotificaciones() {
+    const count = $("#notif-count");
+    count.textContent = notifs.noLeidas > 9 ? "9+" : notifs.noLeidas;
+    count.hidden = notifs.noLeidas === 0;
+
+    const icono = { alerta: "❌", exito: "✅", info: "🍔" };
+    $("#notif-panel").innerHTML = `
+        <div class="notif__titulo">Notificaciones</div>
+        ${notifs.lista.length === 0
+            ? `<div class="notif__item">No tenés notificaciones todavía.</div>`
+            : notifs.lista
+                .map((n) => `<div class="notif__item notif__item--${esc(n.tipo)} ${n.leida ? "" : "notif__item--nueva"}">
+                    <span class="notif__icono">${icono[n.tipo] ?? "🔔"}</span>
+                    <div>${esc(n.mensaje)}<small>${haceCuanto(n.creado_en)}</small></div>
+                </div>`)
+                .join("")}`;
+}
+
+$("#btn-notif").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const panel = $("#notif-panel");
+    panel.hidden = !panel.hidden;
+    $("#btn-notif").setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden && notifs.noLeidas > 0) {
+        try {
+            await api("/notificaciones/leer", { method: "PUT" });
+            notifs.noLeidas = 0;
+            // Se dejan resaltadas mientras el panel está abierto; la próxima vez se ven como leídas
+            $("#notif-count").hidden = true;
+            notifs.lista.forEach((n) => (n.leida = true));
+        } catch { /* nada */ }
+    }
+});
+document.addEventListener("click", (e) => {
+    if (!e.target.closest("#notif")) {
+        $("#notif-panel").hidden = true;
+        $("#btn-notif").setAttribute("aria-expanded", "false");
+        renderNotificaciones();
+    }
+});
+
+/* ---------------- Modal ---------------- */
+
+// Pide confirmación para cancelar un pedido. Devuelve { motivo } o null si se arrepiente.
+function modalCancelar(pedido) {
+    return new Promise((resolve) => {
+        const dlg = $("#modal");
+        dlg.innerHTML = `
+            <form method="dialog" class="modal__form">
+                <h2>Cancelar pedido #${pedido.id}</h2>
+                <p class="subtitulo">${esc(pedido.cliente?.nombre ?? "El cliente")} va a recibir un aviso de que su pedido fue cancelado.</p>
+                <label>Motivo <span class="opcional">(opcional, lo ve el cliente)</span>
+                    <textarea name="motivo" maxlength="200" rows="2" placeholder="Contale al cliente por qué se cancela"></textarea>
+                </label>
+                <div class="motivos">
+                    ${MOTIVOS_CANCELACION.map((m) => `<button type="button" class="chip" data-motivo="${esc(m)}">${esc(m)}</button>`).join("")}
+                </div>
+                <div class="modal__acciones">
+                    <button class="btn" value="volver">Volver</button>
+                    <button class="btn btn--danger-solid" value="ok">Sí, cancelar pedido</button>
+                </div>
+            </form>`;
+        dlg.querySelector(".motivos").addEventListener("click", (e) => {
+            const b = e.target.closest("[data-motivo]");
+            if (b) dlg.querySelector("[name=motivo]").value = b.dataset.motivo;
+        });
+        dlg.returnValue = "";
+        dlg.addEventListener(
+            "close",
+            () => resolve(dlg.returnValue === "ok" ? { motivo: dlg.querySelector("[name=motivo]").value.trim() } : null),
+            { once: true }
+        );
+        dlg.showModal();
+    });
+}
 
 /* ---------------- Navegación ---------------- */
 
@@ -286,7 +517,7 @@ function renderNav() {
     const link = (href, texto) => `<a href="#${href}" class="${ruta === href ? "activo" : ""}">${texto}</a>`;
 
     let html = link("/menu", "Menú");
-    if (estaLogueado()) html += link("/mis-pedidos", "Mis pedidos");
+    if (estaLogueado() && !esAdmin()) html += link("/mis-pedidos", "Mis pedidos");
     if (esAdmin()) {
         html += link("/admin/pedidos", "Gestionar pedidos");
         html += link("/admin/platos", "Gestionar platos");
@@ -305,6 +536,8 @@ function renderNav() {
         </div>`;
     }
     $("#nav").innerHTML = html;
+    // El admin gestiona el local; el carrito es para los clientes
+    $("#btn-carrito").hidden = esAdmin();
 
     $("#btn-salir")?.addEventListener("click", () => {
         cerrarSesion();
@@ -341,6 +574,9 @@ function router() {
         return;
     }
 
+    cortarTimersVista();
+    notifs.alNotificar = null;
+    cerrarCarrito();
     renderNav();
     window.scrollTo(0, 0);
     def.vista();
@@ -358,26 +594,44 @@ let platosMenu = [];
 let filtroMenu = "todos";
 
 async function vistaMenu() {
+    const promoInfo = () => PROMOS_UI.find((p) => p.clave === promo.promocion);
     app.innerHTML = `
         <section class="hero">
-            <h1>Las mejores burgers, a un click 🍔</h1>
-            <p>Elegí tus platos, armá tu pedido y seguilo en tiempo real.</p>
+            <div class="hero__texto">
+                <span class="hero__kicker">La hamburguesería del Ciclón</span>
+                <h1>Hamburguesas El Ciclón</h1>
+                <p class="hero__slogan">“Hamburguesas grandes como tu pasión por San Lorenzo”</p>
+                <div id="hero-promo"></div>
+                <a href="#lista-platos" class="btn btn--blanco" id="btn-ver-menu">Ver el menú</a>
+            </div>
+            <img src="logo.svg" class="hero__logo" alt="Logo de El Ciclón: un cuervo agarrando una hamburguesa">
         </section>
         <div class="chips" id="filtros">
             ${["todos", ...TIPOS]
                 .map((t) => `<button type="button" class="chip ${t === filtroMenu ? "activo" : ""}" data-tipo="${t}">
-                    ${t === "todos" ? "Todos" : `${EMOJI_TIPO[t]} ${t[0].toUpperCase() + t.slice(1)}s`}
+                    ${t === "todos" ? "Todo el menú" : `${TIPO_INFO[t].emoji} ${TIPO_INFO[t].plural}`}
                 </button>`)
                 .join("")}
         </div>
         <div id="lista-platos"><div class="cargando">Cargando menú...</div></div>`;
+
+    const pintarHeroPromo = () => {
+        const info = promoInfo();
+        $("#hero-promo").innerHTML = info ? `<span class="hero__promo">${info.emoji} ${esc(info.titulo)}: ${promo.descuento}% OFF</span>` : "";
+    };
+    pintarHeroPromo();
+
+    $("#btn-ver-menu").addEventListener("click", (e) => {
+        e.preventDefault(); // el hash lo usa el router
+        $("#filtros").scrollIntoView({ behavior: "smooth" });
+    });
 
     $("#filtros").addEventListener("click", (e) => {
         const chip = e.target.closest("[data-tipo]");
         if (!chip) return;
         filtroMenu = chip.dataset.tipo;
         document.querySelectorAll("#filtros .chip").forEach((c) => c.classList.toggle("activo", c === chip));
-        cargarPlatosMenu();
+        pintarPlatosMenu();
     });
 
     $("#lista-platos").addEventListener("click", (e) => {
@@ -408,32 +662,53 @@ async function vistaMenu() {
     });
 
     await cargarPlatosMenu();
+    pintarHeroPromo();
+
+    // Si el admin activa una promo o agota un plato, el menú se actualiza solo
+    cadaTanto(60000, async () => {
+        const antes = promo.promocion;
+        await cargarPromo();
+        if (promo.promocion !== antes) {
+            pintarHeroPromo();
+            await cargarPlatosMenu({ silencioso: true });
+        }
+    });
 }
 
-async function cargarPlatosMenu() {
+async function cargarPlatosMenu({ silencioso = false } = {}) {
     const cont = $("#lista-platos");
     if (!cont) return;
-    cont.innerHTML = `<div class="cargando">Cargando menú...</div>`;
+    if (!silencioso) cont.innerHTML = `<div class="cargando">Cargando menú...</div>`;
     try {
-        // GET /platos o GET /platos/tipo/:tipo
-        platosMenu = await api(filtroMenu === "todos" ? "/platos" : `/platos/tipo/${filtroMenu}`);
-        if (!$("#lista-platos")) return; // el usuario cambió de vista
-        if (platosMenu.length === 0) {
-            cont.innerHTML = `<div class="vacio"><span class="emoji">🍽️</span>No hay platos en esta categoría todavía</div>`;
-            return;
-        }
-        cont.innerHTML = `<div class="grid">${platosMenu.map(cardPlato).join("")}</div>`;
+        // Traemos todo el menú (GET /platos) y filtramos acá: así el carrito se puede sincronizar
+        platosMenu = await api("/platos");
+        sincronizarCarrito(platosMenu);
+        pintarPlatosMenu();
     } catch (err) {
-        cont.innerHTML = `<div class="vacio"><span class="emoji">⚠️</span>${esc(err.message)}</div>`;
+        $("#lista-platos") && (cont.innerHTML = `<div class="vacio"><span class="emoji">⚠️</span>${esc(err.message)}</div>`);
     }
 }
 
+function pintarPlatosMenu() {
+    const cont = $("#lista-platos");
+    if (!cont) return;
+    const lista = filtroMenu === "todos" ? platosMenu : platosMenu.filter((p) => p.tipo === filtroMenu);
+    if (lista.length === 0) {
+        cont.innerHTML = `<div class="vacio"><span class="emoji">🍽️</span>No hay platos en esta categoría todavía</div>`;
+        return;
+    }
+    // Primero lo disponible, lo agotado al final
+    const ordenada = [...lista].sort((a, b) => Number(b.disponible) - Number(a.disponible));
+    cont.innerHTML = `<div class="grid">${ordenada.map(cardPlato).join("")}</div>`;
+}
+
 function controlCantidad(plato) {
+    if (!plato.disponible) return `<button type="button" class="btn btn--sm" disabled>Agotado</button>`;
     const cant = cantidadEnCarrito(plato.id);
     // Los combos se agregan de a uno con la bebida elegida; las cantidades se ajustan en el carrito
     if (plato.tipo === "combo") {
         return `<button type="button" class="btn btn--primary btn--sm" data-agregar-combo="${plato.id}">
-            Agregar${cant > 0 ? ` (${cant} en el pedido)` : ""}</button>`;
+            Agregar${cant > 0 ? ` (${cant})` : ""}</button>`;
     }
     if (cant === 0) {
         return `<button type="button" class="btn btn--primary btn--sm" data-delta="1" data-id="${plato.id}">Agregar</button>`;
@@ -445,23 +720,39 @@ function controlCantidad(plato) {
     </div>`;
 }
 
+const fotoPlato = (p) =>
+    p.imagen
+        ? `<img src="${esc(p.imagen)}" alt="${esc(p.nombre)}" loading="lazy">`
+        : `<div class="plato__placeholder"><img src="logo.svg" alt=""></div>`;
+
+const precioPlato = (p) =>
+    p.descuento > 0
+        ? `<span class="precio precio--promo"><s>${precio(p.precio)}</s>${precio(p.precio_final)}</span>`
+        : `<span class="precio">${precio(p.precio)}</span>`;
+
 const cardPlato = (p) => `
-    <article class="card">
-        <div class="plato__emoji">${EMOJI_TIPO[p.tipo] ?? "🍽️"}</div>
-        <span class="plato__tipo">${esc(p.tipo)}</span>
-        <h3 class="plato__nombre">${esc(p.nombre)}</h3>
-        <p class="plato__desc">${esc(p.descripcion)}</p>
-        ${p.tipo === "combo"
-            ? `<label class="plato__bebida">Bebida
-                <select data-bebida="${p.id}">
-                    <option value="">Elegí tu bebida</option>
-                    ${BEBIDAS_COMBO.map((b) => `<option value="${b}">${b}</option>`).join("")}
-                </select>
-            </label>`
-            : ""}
-        <div class="plato__pie">
-            <span class="precio">${precio(p.precio)}</span>
-            <span data-control="${p.id}">${controlCantidad(p)}</span>
+    <article class="card plato ${p.disponible ? "" : "plato--agotado"}">
+        <div class="plato__foto">
+            ${fotoPlato(p)}
+            ${p.descuento > 0 && p.disponible ? `<span class="badge badge--promo">-${p.descuento}%</span>` : ""}
+            ${p.disponible ? "" : `<span class="badge badge--agotado">Agotado</span>`}
+        </div>
+        <div class="plato__cuerpo">
+            <span class="plato__tipo">${esc(TIPO_INFO[p.tipo]?.singular ?? p.tipo)}</span>
+            <h3>${esc(p.nombre)}</h3>
+            <p class="plato__desc">${esc(p.descripcion)}</p>
+            ${p.tipo === "combo" && p.disponible
+                ? `<label class="plato__bebida">Bebida incluida
+                    <select data-bebida="${p.id}">
+                        <option value="">Elegí tu bebida</option>
+                        ${BEBIDAS_COMBO.map((b) => `<option value="${b}">${b}</option>`).join("")}
+                    </select>
+                </label>`
+                : ""}
+            <div class="plato__pie">
+                ${precioPlato(p)}
+                <span data-control="${p.id}">${controlCantidad(p)}</span>
+            </div>
         </div>
     </article>`;
 
@@ -481,6 +772,7 @@ function vistaLogin() {
     }
     app.innerHTML = `
         <div class="card form-card">
+            <img src="logo.svg" alt="" class="form-card__logo">
             <h1>Ingresar</h1>
             <p class="subtitulo">Iniciá sesión para hacer y seguir tus pedidos.</p>
             <form class="form" id="form-login" novalidate>
@@ -512,7 +804,7 @@ function vistaLogin() {
 async function login(email, password) {
     const { token, usuario } = await api("/auth/login", { method: "POST", body: { email: email.trim(), password } });
     iniciarSesion(token, usuario);
-    toast(`¡Bienvenido/a, ${usuario.nombre}!`, "success");
+    toast(`¡Bienvenido/a, ${usuario.nombre}! Vamos Ciclón 💙❤️`, "success");
     location.hash = esAdmin() ? "#/admin/pedidos" : "#/menu";
     if (carrito.length > 0 && !esAdmin()) setTimeout(abrirCarrito, 150);
 }
@@ -524,6 +816,7 @@ function vistaRegistro() {
     }
     app.innerHTML = `
         <div class="card form-card">
+            <img src="logo.svg" alt="" class="form-card__logo">
             <h1>Crear cuenta</h1>
             <p class="subtitulo">Registrate para empezar a pedir.</p>
             <form class="form" id="form-registro" novalidate>
@@ -595,6 +888,59 @@ async function enviarForm(form, accion) {
     }
 }
 
+/* ---------------- Pedidos (compartido) ---------------- */
+
+function progreso(estado) {
+    const idx = ESTADOS.indexOf(estado);
+    return `
+        <div class="progreso">${ESTADOS.map((_, i) => `<div class="${i < idx ? "hecho" : i === idx ? (estado === "entregado" ? "hecho" : "actual") : ""}"></div>`).join("")}</div>
+        <div class="progreso__labels">${ESTADOS.map((e) => `<span>${e}</span>`).join("")}</div>`;
+}
+
+function cardPedido(p, { admin = false } = {}) {
+    const accion = SIGUIENTE_ACCION[p.estado];
+    const cancelable = admin && p.estado !== "entregado" && p.estado !== "cancelado";
+    const ahorro = p.subtotal - p.total;
+    return `
+        <article class="card ${p.estado === "cancelado" ? "pedido--cancelado" : ""}" data-pedido="${p.id}">
+            <div class="pedido__head">
+                <div>
+                    <h3>Pedido #${p.id}</h3>
+                    <span class="pedido__meta">${fecha(p.fecha)}${p.creado_en ? ` · ${hora(p.creado_en)} hs` : ""}</span>
+                </div>
+                <span class="${claseEstado(p.estado)}">${esc(p.estado)}</span>
+            </div>
+            ${p.estado === "cancelado"
+                ? `<div class="aviso aviso--cancelado">❌ Pedido cancelado${p.motivo_cancelacion ? `: ${esc(p.motivo_cancelacion)}` : ""}</div>`
+                : progreso(p.estado)}
+            ${admin || p.direccion
+                ? `<div class="pedido__datos">
+                    ${admin ? `<span>👤 <strong>${esc(p.cliente?.nombre ?? `Usuario #${p.id_usuario}`)}</strong>${p.cliente?.email ? ` · ${esc(p.cliente.email)}` : ""}</span>` : ""}
+                    ${p.direccion ? `<span>📍 ${esc(p.direccion)}</span>` : ""}
+                    ${p.comentario ? `<span>📝 ${esc(p.comentario)}</span>` : ""}
+                </div>`
+                : ""}
+            <ul class="pedido__lista">
+                ${p.platos
+                    .map((pl) => `<li><span>${pl.cantidad} × ${esc(pl.nombre ?? `Plato #${pl.id}`)}${pl.bebida ? ` <small>(🥤 ${esc(pl.bebida)})</small>` : ""}</span>
+                        <span>${pl.precio != null ? precio(pl.precio * pl.cantidad) : ""}</span></li>`)
+                    .join("")}
+            </ul>
+            <div class="pedido__pie">
+                <div class="pedido__totales">
+                    <strong>Total: ${precio(p.total)}</strong>
+                    ${ahorro > 0 ? `<small>${esc(p.promocion ?? "Promoción")} (-${p.descuento}%): ahorro de ${precio(ahorro)}</small>` : ""}
+                </div>
+                ${admin && (accion || cancelable)
+                    ? `<div class="pedido__acciones">
+                        ${accion ? `<button type="button" class="btn btn--azul btn--sm" data-accion="${accion.ruta}" data-id="${p.id}">${accion.texto}</button>` : ""}
+                        ${cancelable ? `<button type="button" class="btn btn--danger btn--sm" data-accion="cancelar" data-id="${p.id}">Cancelar pedido</button>` : ""}
+                    </div>`
+                    : ""}
+            </div>
+        </article>`;
+}
+
 /* ---------------- Mis pedidos ---------------- */
 
 async function vistaMisPedidos() {
@@ -602,7 +948,7 @@ async function vistaMisPedidos() {
         <div class="page-head">
             <div>
                 <h1>Mis pedidos</h1>
-                <p class="subtitulo">Seguí el estado de cada pedido.</p>
+                <p class="subtitulo">Seguí el estado de cada pedido. Se actualiza solo.</p>
             </div>
             <button class="btn" id="btn-refrescar" type="button">↻ Actualizar</button>
         </div>
@@ -610,6 +956,7 @@ async function vistaMisPedidos() {
 
     const cargar = async () => {
         const cont = $("#lista");
+        if (!cont) return;
         try {
             const pedidos = await api("/pedidos/usuario"); // GET /pedidos/usuario
             if (!$("#lista")) return;
@@ -626,88 +973,83 @@ async function vistaMisPedidos() {
     };
 
     $("#btn-refrescar").addEventListener("click", cargar);
+    // Cuando llega una notificación (cambio de estado / cancelación) se recarga la lista
+    notifs.alNotificar = cargar;
+    cadaTanto(30000, cargar);
     await cargar();
-}
-
-function progreso(estado) {
-    const idx = ESTADOS.indexOf(estado);
-    return `
-        <div class="progreso">${ESTADOS.map((_, i) => `<div class="${i <= idx ? "hecho" : ""}"></div>`).join("")}</div>
-        <div class="progreso__labels">${ESTADOS.map((e) => `<span>${e}</span>`).join("")}</div>`;
-}
-
-function cardPedido(p, { admin = false } = {}) {
-    const accion = SIGUIENTE_ACCION[p.estado];
-    return `
-        <article class="card" data-pedido="${p.id}">
-            <div class="pedido__head">
-                <div>
-                    <h3 style="margin:0">Pedido #${p.id}</h3>
-                    <span class="pedido__meta">${fecha(p.fecha)}${admin ? ` · Usuario #${p.id_usuario}` : ""}</span>
-                </div>
-                <span class="${claseEstado(p.estado)}">${esc(p.estado)}</span>
-            </div>
-            ${progreso(p.estado)}
-            <ul class="pedido__lista">
-                ${p.platos
-                    .map((pl) => `<li><span>${pl.cantidad} × ${esc(pl.nombre ?? `Plato #${pl.id}`)}${pl.bebida ? ` <small>(🥤 ${esc(pl.bebida)})</small>` : ""}</span>
-                        <span>${pl.precio != null ? precio(pl.precio * pl.cantidad) : ""}</span></li>`)
-                    .join("")}
-            </ul>
-            <div class="pedido__pie">
-                <strong>Total: ${precio(p.total)}</strong>
-                ${admin
-                    ? `<div class="pedido__acciones">
-                        ${accion ? `<button type="button" class="btn btn--primary btn--sm" data-accion="${accion.ruta}" data-id="${p.id}">${accion.texto}</button>` : ""}
-                        <button type="button" class="btn btn--danger btn--sm" data-accion="eliminar" data-id="${p.id}">Eliminar</button>
-                    </div>`
-                    : ""}
-            </div>
-        </article>`;
 }
 
 /* ---------------- Admin: pedidos ---------------- */
 
-let filtroEstadoAdmin = "todos";
+let filtroEstadoAdmin = "activos";
 
 async function vistaAdminPedidos() {
+    const FILTROS = [
+        { clave: "activos", texto: "En curso" },
+        ...ESTADOS.map((e) => ({ clave: e, texto: e[0].toUpperCase() + e.slice(1) })),
+        { clave: "cancelado", texto: "Cancelados" },
+        { clave: "todos", texto: "Todos" },
+    ];
+
     app.innerHTML = `
         <div class="page-head">
             <div>
                 <h1>Gestionar pedidos</h1>
-                <p class="subtitulo">Aceptá, enviá y entregá los pedidos de los clientes.</p>
+                <p class="subtitulo">Aceptá, despachá y entregá los pedidos. La lista se actualiza sola cada 20 segundos.</p>
             </div>
             <form class="buscador" id="form-buscar">
-                <input type="number" min="1" name="id" placeholder="Buscar por id" aria-label="Id de pedido">
+                <input type="number" min="1" name="id" placeholder="N° de pedido" aria-label="Número de pedido">
                 <button class="btn" type="submit">Buscar</button>
                 <button class="btn" type="button" id="btn-refrescar" title="Ver todos">↻</button>
             </form>
         </div>
-        <div class="chips" id="filtros">
-            ${["todos", ...ESTADOS]
-                .map((e) => `<button type="button" class="chip ${e === filtroEstadoAdmin ? "activo" : ""}" data-estado="${e}">${e === "todos" ? "Todos" : e}</button>`)
-                .join("")}
-        </div>
+        <div class="chips" id="filtros"></div>
         <div id="lista"><div class="cargando">Cargando pedidos...</div></div>`;
 
     let pedidos = [];
+    let buscando = false; // mientras se muestra un resultado de búsqueda no se auto-refresca
+    let idsConocidos = null;
 
-    const pintar = (lista) => {
+    const coincide = (p, filtro) =>
+        filtro === "todos" ||
+        (filtro === "activos" ? ["pendiente", "aceptado", "en camino"].includes(p.estado) : p.estado === filtro);
+
+    const pintarFiltros = () => {
+        $("#filtros").innerHTML = FILTROS.map((f) => {
+            const n = f.clave === "todos" ? 0 : pedidos.filter((p) => coincide(p, f.clave)).length;
+            const mostrarN = ["activos", "pendiente"].includes(f.clave) && n > 0;
+            return `<button type="button" class="chip ${f.clave === filtroEstadoAdmin ? "activo" : ""}" data-estado="${f.clave}">
+                ${f.texto}${mostrarN ? `<span class="chip__n">${n}</span>` : ""}</button>`;
+        }).join("");
+    };
+
+    const pintar = () => {
         const cont = $("#lista");
         if (!cont) return;
-        const filtrados = filtroEstadoAdmin === "todos" ? lista : lista.filter((p) => p.estado === filtroEstadoAdmin);
+        pintarFiltros();
+        const filtrados = pedidos.filter((p) => coincide(p, filtroEstadoAdmin));
         if (filtrados.length === 0) {
             cont.innerHTML = `<div class="vacio"><span class="emoji">🧾</span>No hay pedidos para mostrar</div>`;
             return;
         }
-        cont.innerHTML = `<div class="pedidos">${[...filtrados].reverse().map((p) => cardPedido(p, { admin: true })).join("")}</div>`;
+        // En curso: los más viejos primero (se atienden en orden de llegada). El resto: más recientes primero.
+        const orden = filtroEstadoAdmin === "activos" || filtroEstadoAdmin === "pendiente" ? filtrados : [...filtrados].reverse();
+        cont.innerHTML = `<div class="pedidos">${orden.map((p) => cardPedido(p, { admin: true })).join("")}</div>`;
     };
 
-    const cargarTodos = async () => {
-        $("#lista").innerHTML = `<div class="cargando">Cargando pedidos...</div>`;
+    const cargarTodos = async ({ silencioso = false } = {}) => {
+        if (!silencioso) $("#lista").innerHTML = `<div class="cargando">Cargando pedidos...</div>`;
         try {
             pedidos = await api("/pedidos"); // GET /pedidos
-            pintar(pedidos);
+            if (!$("#lista")) return;
+            buscando = false;
+            // Avisar los pedidos nuevos que llegaron desde la última carga
+            if (idsConocidos) {
+                const nuevos = pedidos.filter((p) => !idsConocidos.has(p.id));
+                nuevos.forEach((p) => toast(`🔔 Nuevo pedido #${p.id} de ${p.cliente?.nombre ?? "un cliente"}`, "info", 7000));
+            }
+            idsConocidos = new Set(pedidos.map((p) => p.id));
+            pintar();
         } catch (err) {
             $("#lista") && ($("#lista").innerHTML = `<div class="vacio"><span class="emoji">⚠️</span>${esc(err.message)}</div>`);
         }
@@ -717,8 +1059,7 @@ async function vistaAdminPedidos() {
         const chip = e.target.closest("[data-estado]");
         if (!chip) return;
         filtroEstadoAdmin = chip.dataset.estado;
-        document.querySelectorAll("#filtros .chip").forEach((c) => c.classList.toggle("activo", c === chip));
-        pintar(pedidos);
+        pintar();
     });
 
     $("#form-buscar").addEventListener("submit", async (e) => {
@@ -728,9 +1069,9 @@ async function vistaAdminPedidos() {
         try {
             const pedido = await api(`/pedidos/${encodeURIComponent(id)}`); // GET /pedidos/:id
             pedidos = [pedido];
+            buscando = true;
             filtroEstadoAdmin = "todos";
-            document.querySelectorAll("#filtros .chip").forEach((c) => c.classList.toggle("activo", c.dataset.estado === "todos"));
-            pintar(pedidos);
+            pintar();
         } catch (err) {
             toast(err.message, "error");
         }
@@ -746,57 +1087,111 @@ async function vistaAdminPedidos() {
         if (!btn) return;
         const id = Number(btn.dataset.id);
         const accion = btn.dataset.accion;
+        const pedido = pedidos.find((p) => p.id === id);
 
-        if (accion === "eliminar" && !confirm(`¿Eliminar el pedido #${id}? Esta acción no se puede deshacer.`)) return;
+        let body;
+        if (accion === "cancelar") {
+            const r = await modalCancelar(pedido ?? { id });
+            if (!r) return;
+            body = r.motivo ? { motivo: r.motivo } : undefined;
+        }
 
         btn.disabled = true;
         try {
-            if (accion === "eliminar") {
-                const r = await api(`/pedidos/${id}`, { method: "DELETE" }); // DELETE /pedidos/:id
-                pedidos = pedidos.filter((p) => p.id !== id);
-                toast(r.message, "success");
-            } else {
-                // PUT /pedidos/:id/aceptar | comenzar | entregar
-                const r = await api(`/pedidos/${id}/${accion}`, { method: "PUT" });
-                pedidos = pedidos.map((p) => (p.id === id ? r.pedido : p));
-                toast(r.message, "success");
-            }
-            pintar(pedidos);
+            // PUT /pedidos/:id/aceptar | comenzar | entregar | cancelar
+            const r = await api(`/pedidos/${id}/${accion}`, { method: "PUT", body });
+            pedidos = pedidos.map((p) => (p.id === id ? r.pedido : p));
+            toast(r.message, "success");
+            pintar();
         } catch (err) {
             toast(err.message, "error");
             btn.disabled = false;
         }
     });
 
+    cadaTanto(20000, () => {
+        // No refrescar con un modal abierto o mostrando una búsqueda
+        if (!buscando && !$("#modal").open) cargarTodos({ silencioso: true });
+    });
     await cargarTodos();
 }
 
-/* ---------------- Admin: platos ---------------- */
+/* ---------------- Admin: platos y promociones ---------------- */
+
+// Achica la foto en el navegador (máx. 900 px, JPG) para que viaje liviana en el JSON
+async function procesarImagen(file) {
+    if (!file.type.startsWith("image/")) throw new Error("El archivo tiene que ser una imagen");
+    if (file.size > 15 * 1024 * 1024) throw new Error("La imagen pesa demasiado (máximo 15 MB)");
+    const url = URL.createObjectURL(file);
+    try {
+        const img = await new Promise((resolve, reject) => {
+            const i = new Image();
+            i.onload = () => resolve(i);
+            i.onerror = () => reject(new Error("No se pudo leer la imagen"));
+            i.src = url;
+        });
+        const MAX = 900;
+        const escala = Math.min(1, MAX / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * escala);
+        canvas.height = Math.round(img.height * escala);
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff"; // fondo blanco para PNG con transparencia
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        let calidad = 0.85;
+        let data = canvas.toDataURL("image/jpeg", calidad);
+        while (data.length > 1_400_000 && calidad > 0.4) {
+            calidad -= 0.15;
+            data = canvas.toDataURL("image/jpeg", calidad);
+        }
+        return data;
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+}
 
 async function vistaAdminPlatos() {
     app.innerHTML = `
         <div class="page-head">
             <div>
                 <h1>Gestionar platos</h1>
-                <p class="subtitulo">Creá, editá y eliminá los platos del menú.</p>
+                <p class="subtitulo">Promociones del día, fotos, precios y stock del menú.</p>
             </div>
         </div>
+        <section class="card promos">
+            <h2>Promociones</h2>
+            <p class="subtitulo">Se aplican a todo el menú al instante. Solo puede haber una activa: activar una apaga la otra.</p>
+            <div class="promos__grid" id="promos"></div>
+        </section>
         <div class="admin-grid">
             <div class="card">
                 <h2 id="form-titulo">Nuevo plato</h2>
                 <form class="form" id="form-plato" novalidate>
-                    <label>Tipo
+                    <label>Categoría
                         <select name="tipo" required>
-                            <option value="">Elegí un tipo</option>
-                            ${TIPOS.map((t) => `<option value="${t}">${EMOJI_TIPO[t]} ${t}</option>`).join("")}
+                            <option value="">Elegí una categoría</option>
+                            ${TIPOS.map((t) => `<option value="${t}">${TIPO_INFO[t].emoji} ${TIPO_INFO[t].singular}</option>`).join("")}
                         </select>
                     </label>
                     <label>Nombre <input name="nombre" required maxlength="70"></label>
-                    <label>Precio <input name="precio" type="number" min="1" step="1" required></label>
+                    <label>Precio de lista ($) <input name="precio" type="number" min="1" step="1" required></label>
                     <label>Descripción
                         <textarea name="descripcion" required maxlength="400"></textarea>
                         <span class="contador" id="contador-desc">0 / 400</span>
                     </label>
+                    <div>
+                        <span style="font-weight:500;font-size:0.92rem">Foto</span>
+                        <div class="foto-input">
+                            <div class="foto-input__preview" id="foto-preview">Sin foto</div>
+                            <div class="foto-input__botones">
+                                <label class="btn btn--sm" for="foto-archivo" style="display:inline-block">📷 Elegir foto</label>
+                                <input type="file" id="foto-archivo" accept="image/*">
+                                <button type="button" class="btn btn--sm btn--danger" id="btn-quitar-foto" hidden>Quitar foto</button>
+                            </div>
+                        </div>
+                    </div>
+                    <label class="check"><input type="checkbox" name="disponible" checked> Disponible para la venta</label>
                     <div class="form-error" id="error" hidden></div>
                     <button class="btn btn--primary btn--block" type="submit" id="btn-guardar">Crear plato</button>
                     <button class="btn btn--block" type="button" id="btn-cancelar" hidden>Cancelar edición</button>
@@ -810,14 +1205,73 @@ async function vistaAdminPlatos() {
 
     let platos = [];
     let editando = null; // plato que se está editando
+    let imagen = null; // foto del formulario: data URL / URL o null
 
     const form = $("#form-plato");
     const desc = form.descripcion;
     desc.addEventListener("input", () => ($("#contador-desc").textContent = `${desc.value.length} / 400`));
 
+    /* --- Promociones --- */
+    const pintarPromos = () => {
+        $("#promos").innerHTML = PROMOS_UI.map((p) => `
+            <button type="button" class="promo-toggle ${promo.promocion === p.clave ? "activa" : ""}" data-promo="${p.clave}"
+                aria-pressed="${promo.promocion === p.clave}">
+                <span class="promo-toggle__emoji">${p.emoji}</span>
+                <span class="promo-toggle__texto"><strong>${esc(p.titulo)}</strong><small>${esc(p.detalle)}</small></span>
+                <span class="switch" aria-hidden="true"></span>
+            </button>`).join("");
+    };
+
+    $("#promos").addEventListener("click", async (e) => {
+        const btn = e.target.closest("[data-promo]");
+        if (!btn) return;
+        const clave = btn.dataset.promo;
+        const nueva = promo.promocion === clave ? null : clave; // tocar la activa la apaga
+        document.querySelectorAll("[data-promo]").forEach((b) => (b.disabled = true));
+        try {
+            const r = await api("/promocion", { method: "PUT", body: { promocion: nueva } });
+            promo = { promocion: r.promocion, nombre: r.nombre, descuento: r.descuento };
+            renderPromoBanner();
+            toast(r.message, "success");
+            await cargar(); // los precios finales cambiaron
+        } catch (err) {
+            toast(err.message, "error");
+        } finally {
+            pintarPromos();
+        }
+    });
+
+    /* --- Foto --- */
+    const pintarFoto = () => {
+        $("#foto-preview").innerHTML = imagen ? `<img src="${esc(imagen)}" alt="Vista previa">` : "Sin foto";
+        $("#btn-quitar-foto").hidden = !imagen;
+    };
+
+    $("#foto-archivo").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        e.target.value = ""; // permite volver a elegir el mismo archivo
+        if (!file) return;
+        $("#foto-preview").textContent = "Procesando...";
+        try {
+            imagen = await procesarImagen(file);
+        } catch (err) {
+            toast(err.message, "error");
+        }
+        pintarFoto();
+    });
+
+    $("#btn-quitar-foto").addEventListener("click", () => {
+        imagen = null;
+        pintarFoto();
+    });
+
+    /* --- Formulario --- */
     const modoCrear = () => {
         editando = null;
+        imagen = null;
         form.reset();
+        form.disponible.checked = true;
+        pintarFoto();
         $("#contador-desc").textContent = "0 / 400";
         $("#form-titulo").textContent = "Nuevo plato";
         $("#btn-guardar").textContent = "Crear plato";
@@ -827,10 +1281,13 @@ async function vistaAdminPlatos() {
 
     const modoEditar = (plato) => {
         editando = plato;
-        form.tipo.value = plato.tipo;
+        imagen = plato.imagen ?? null;
+        form.tipo.value = TIPOS.includes(plato.tipo) ? plato.tipo : "";
         form.nombre.value = plato.nombre;
         form.precio.value = plato.precio;
         form.descripcion.value = plato.descripcion;
+        form.disponible.checked = plato.disponible;
+        pintarFoto();
         $("#contador-desc").textContent = `${plato.descripcion.length} / 400`;
         $("#form-titulo").textContent = `Editar plato #${plato.id}`;
         $("#btn-guardar").textContent = "Guardar cambios";
@@ -848,14 +1305,16 @@ async function vistaAdminPlatos() {
         }
         cont.innerHTML = `
             <table>
-                <thead><tr><th>Id</th><th>Plato</th><th>Tipo</th><th>Precio</th><th></th></tr></thead>
+                <thead><tr><th>Foto</th><th>Plato</th><th>Categoría</th><th>Precio</th><th>Stock</th><th></th></tr></thead>
                 <tbody>
                     ${platos
                         .map((p) => `<tr>
-                            <td>${p.id}</td>
+                            <td>${p.imagen ? `<img class="thumb" src="${esc(p.imagen)}" alt="">` : `<span class="thumb thumb--vacia">📷</span>`}</td>
                             <td><strong>${esc(p.nombre)}</strong><br><small class="subtitulo">${esc(p.descripcion)}</small></td>
-                            <td>${EMOJI_TIPO[p.tipo] ?? ""} ${esc(p.tipo)}</td>
-                            <td>${precio(p.precio)}</td>
+                            <td>${TIPO_INFO[p.tipo]?.emoji ?? ""} ${esc(TIPO_INFO[p.tipo]?.singular ?? p.tipo)}</td>
+                            <td>${p.descuento > 0 ? `<s class="subtitulo">${precio(p.precio)}</s><br><strong style="color:var(--rojo)">${precio(p.precio_final)}</strong>` : precio(p.precio)}</td>
+                            <td><button type="button" class="pill ${p.disponible ? "pill--ok" : "pill--no"}" data-stock="${p.id}"
+                                title="Tocar para marcar como ${p.disponible ? "agotado" : "disponible"}">${p.disponible ? "Disponible" : "Agotado"}</button></td>
                             <td class="acciones">
                                 <button type="button" class="btn btn--sm" data-editar="${p.id}">Editar</button>
                                 <button type="button" class="btn btn--danger btn--sm" data-eliminar="${p.id}">Eliminar</button>
@@ -869,6 +1328,7 @@ async function vistaAdminPlatos() {
     const cargar = async () => {
         try {
             platos = await api("/platos");
+            sincronizarCarrito(platos);
             pintarTabla();
         } catch (err) {
             $("#tabla") && ($("#tabla").innerHTML = `<div class="vacio"><span class="emoji">⚠️</span>${esc(err.message)}</div>`);
@@ -885,9 +1345,16 @@ async function vistaAdminPlatos() {
             nombre: d.nombre.trim(),
             precio: Number(d.precio),
             descripcion: d.descripcion.trim(),
+            imagen,
+            disponible: form.disponible.checked,
         };
 
-        const faltan = Object.entries(datos).filter(([, v]) => v === "" || (typeof v === "number" && !d.precio)).map(([k]) => k);
+        const faltan = [
+            !datos.tipo && "categoría",
+            !datos.nombre && "nombre",
+            !d.precio && "precio",
+            !datos.descripcion && "descripción",
+        ].filter(Boolean);
         if (faltan.length) return mostrarError(`Completá: ${faltan.join(", ")}`);
         if (!Number.isInteger(datos.precio) || datos.precio <= 0) return mostrarError("El precio debe ser un número entero mayor a 0");
 
@@ -903,6 +1370,7 @@ async function vistaAdminPlatos() {
                 platos.push(nuevo);
                 toast(`Plato "${nuevo.nombre}" creado`, "success");
             }
+            sincronizarCarrito(platos);
             pintarTabla();
             modoCrear();
         });
@@ -911,16 +1379,34 @@ async function vistaAdminPlatos() {
     $("#tabla").addEventListener("click", async (e) => {
         const btnEditar = e.target.closest("[data-editar]");
         const btnEliminar = e.target.closest("[data-eliminar]");
+        const btnStock = e.target.closest("[data-stock]");
 
         if (btnEditar) {
             const plato = platos.find((p) => p.id === Number(btnEditar.dataset.editar));
             if (plato) modoEditar(plato);
             return;
         }
+        if (btnStock) {
+            const id = Number(btnStock.dataset.stock);
+            const plato = platos.find((p) => p.id === id);
+            if (!plato) return;
+            btnStock.disabled = true;
+            try {
+                const actualizado = await api(`/platos/${id}`, { method: "PUT", body: { disponible: !plato.disponible } });
+                platos = platos.map((p) => (p.id === id ? actualizado : p));
+                if (editando?.id === id) form.disponible.checked = actualizado.disponible;
+                toast(`"${actualizado.nombre}" ${actualizado.disponible ? "vuelve a estar disponible" : "marcado como agotado"}`, "success");
+                pintarTabla();
+            } catch (err) {
+                toast(err.message, "error");
+                btnStock.disabled = false;
+            }
+            return;
+        }
         if (btnEliminar) {
             const id = Number(btnEliminar.dataset.eliminar);
             const plato = platos.find((p) => p.id === id);
-            if (!confirm(`¿Eliminar "${plato?.nombre ?? id}"?`)) return;
+            if (!confirm(`¿Eliminar "${plato?.nombre ?? id}" del menú?`)) return;
             btnEliminar.disabled = true;
             try {
                 const r = await api(`/platos/${id}`, { method: "DELETE" }); // DELETE /platos/:id
@@ -933,12 +1419,13 @@ async function vistaAdminPlatos() {
                 toast(r.message, "success");
             } catch (err) {
                 // Ej.: 409 si el plato forma parte de pedidos
-                toast(err.message, "error");
+                toast(err.message, "error", 7000);
                 btnEliminar.disabled = false;
             }
         }
     });
 
+    pintarPromos();
     await cargar();
 }
 
@@ -946,4 +1433,6 @@ async function vistaAdminPlatos() {
 
 programarExpiracion();
 renderCarrito();
+iniciarNotificaciones();
+cargarPromo().then(renderCarrito);
 router();

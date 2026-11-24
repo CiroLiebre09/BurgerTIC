@@ -3,14 +3,30 @@ import { TIPOS_PLATO } from "../db.js";
 import { HttpError } from "../utils/HttpError.js";
 import { parseId, validarString, validarBody, camposFaltantes, esEnteroPositivo } from "../utils/validaciones.js";
 
-const CAMPOS = ["tipo", "nombre", "precio", "descripcion"];
+const OBLIGATORIOS = ["tipo", "nombre", "precio", "descripcion"];
+const CAMPOS = [...OBLIGATORIOS, "imagen", "disponible"];
+
+// Foto: data URL de imagen (la sube el admin desde el front, ya achicada) o URL http(s)
+const MAX_IMAGEN = 1_500_000; // ~1,1 MB de imagen en base64
+const DATA_URL_IMAGEN = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const URL_HTTP = /^https?:\/\/\S+$/;
+
+const validarImagen = (valor) => {
+    if (valor === null || valor === "") return null; // quitar la foto
+    if (typeof valor !== "string") throw new HttpError(400, "La imagen debe ser un texto (data URL o URL) o null");
+    if (valor.length > MAX_IMAGEN) throw new HttpError(400, "La imagen es demasiado grande (máximo ~1 MB)");
+    if (!DATA_URL_IMAGEN.test(valor) && !(URL_HTTP.test(valor) && valor.length <= 2000)) {
+        throw new HttpError(400, "La imagen debe ser un archivo PNG, JPG, WEBP o GIF, o una URL http(s)");
+    }
+    return valor;
+};
 
 // parcial = true para PUT (se puede mandar solo algunos campos)
 const validarPlato = (body, parcial = false) => {
     validarBody(body);
 
     if (!parcial) {
-        const faltantes = camposFaltantes(body, CAMPOS);
+        const faltantes = camposFaltantes(body, OBLIGATORIOS);
         if (faltantes.length > 0) {
             throw new HttpError(400, `Faltan campos obligatorios: ${faltantes.join(", ")}`);
         }
@@ -31,6 +47,10 @@ const validarPlato = (body, parcial = false) => {
     if ("descripcion" in datos) datos.descripcion = validarString(datos.descripcion, "descripcion", 400);
     if ("precio" in datos && !esEnteroPositivo(datos.precio)) {
         throw new HttpError(400, "El precio debe ser un número entero mayor a 0");
+    }
+    if ("imagen" in datos) datos.imagen = validarImagen(datos.imagen);
+    if ("disponible" in datos && typeof datos.disponible !== "boolean") {
+        throw new HttpError(400, "El campo disponible debe ser true o false");
     }
 
     return datos;
