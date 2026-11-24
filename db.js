@@ -23,6 +23,7 @@ export const sequelize = new Sequelize(connectionString, {
 
 export const TIPOS_PLATO = ["principal", "combo", "postre"];
 export const ESTADOS_PEDIDO = ["pendiente", "aceptado", "en camino", "entregado"];
+export const BEBIDAS_COMBO = ["Agua", "Pepsi", "Mirinda", "Seven Up"];
 
 /* ===================== MODELOS ===================== */
 
@@ -61,6 +62,12 @@ export const Pedido = sequelize.define("pedidos", {
 export const PlatoXPedido = sequelize.define("platosxpedidos", {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     cantidad: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1 } },
+    // Solo para platos de tipo "combo": la bebida que eligió el cliente
+    bebida: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        validate: { isIn: [BEBIDAS_COMBO] },
+    },
 });
 
 /* =================== ASOCIACIONES =================== */
@@ -93,5 +100,15 @@ PlatoXPedido.belongsTo(Plato, { foreignKey: "id_plato", as: "plato" });
 export const conectarDB = async () => {
     await sequelize.authenticate();
     await sequelize.sync(); // crea las tablas que no existan
+
+    // sync() no agrega columnas a tablas que ya existen: si la base es anterior
+    // a la elección de bebida, agregamos la columna a mano.
+    const qi = sequelize.getQueryInterface();
+    const columnas = await qi.describeTable("platosxpedidos");
+    if (!columnas.bebida) {
+        await qi.addColumn("platosxpedidos", "bebida", { type: DataTypes.STRING(20), allowNull: true });
+        console.log('Columna "bebida" agregada a platosxpedidos');
+    }
+
     console.log("Conectado a la base de datos y tablas sincronizadas");
 };

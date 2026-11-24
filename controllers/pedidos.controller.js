@@ -1,6 +1,7 @@
 import * as pedidosService from "../services/pedidos.service.js";
 import { HttpError } from "../utils/HttpError.js";
 import { parseId, validarBody, esEnteroPositivo } from "../utils/validaciones.js";
+import { BEBIDAS_COMBO } from "../db.js";
 
 const validarPlatosPedido = (body) => {
     validarBody(body);
@@ -24,9 +25,14 @@ const validarPlatosPedido = (body) => {
         if (!esEnteroPositivo(p.cantidad)) {
             throw new HttpError(400, `platos[${i}].cantidad debe ser un número entero mayor a 0`);
         }
+        // Si viene bebida tiene que ser una de las permitidas.
+        // Que sea obligatoria para los combos se verifica en el service (ahí se conoce el tipo del plato).
+        if (p.bebida !== undefined && p.bebida !== null && !BEBIDAS_COMBO.includes(p.bebida)) {
+            throw new HttpError(400, `platos[${i}].bebida debe ser una de: ${BEBIDAS_COMBO.join(", ")}`);
+        }
     });
 
-    return platos.map(({ id, cantidad }) => ({ id, cantidad }));
+    return platos.map(({ id, cantidad, bebida }) => ({ id, cantidad, bebida: bebida ?? null }));
 };
 
 export const getPedidos = async (req, res) => {

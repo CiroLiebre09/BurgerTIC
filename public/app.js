@@ -7,6 +7,7 @@
 const TIPOS = ["principal", "combo", "postre"];
 const ESTADOS = ["pendiente", "aceptado", "en camino", "entregado"];
 const EMOJI_TIPO = { principal: "🍔", combo: "🍟", postre: "🍦" };
+const BEBIDAS_COMBO = ["Agua", "Pepsi", "Mirinda", "Seven Up"]; // mismas que en el back (db.js)
 
 // Acción de admin disponible según el estado actual del pedido
 const SIGUIENTE_ACCION = {
@@ -162,24 +163,31 @@ async function api(ruta, { method = "GET", body } = {}) {
 }
 
 /* ---------------- Carrito ---------------- */
-// [{ id, nombre, precio, cantidad }]
+// [{ key, id, nombre, precio, cantidad, bebida }]
+// Un mismo combo con distinta bebida ocupa renglones distintos, por eso cada renglón
+// se identifica por key = "id|bebida" y no solo por el id del plato.
+const claveItem = (id, bebida) => `${id}|${bebida ?? ""}`;
+
 let carrito = storage.get("burgertic_carrito", []);
 if (!Array.isArray(carrito)) carrito = [];
+carrito.forEach((i) => (i.key = claveItem(i.id, i.bebida)));
 
 const guardarCarrito = () => {
     storage.set("burgertic_carrito", carrito);
     renderCarrito();
 };
 
-const cantidadEnCarrito = (id) => carrito.find((i) => i.id === id)?.cantidad ?? 0;
+// Total de unidades de un plato en el carrito (sumando todas sus bebidas)
+const cantidadEnCarrito = (id) => carrito.filter((i) => i.id === id).reduce((a, i) => a + i.cantidad, 0);
 
-function cambiarCantidad(plato, delta) {
-    const item = carrito.find((i) => i.id === plato.id);
+function cambiarCantidad(plato, delta, bebida = null) {
+    const key = claveItem(plato.id, bebida);
+    const item = carrito.find((i) => i.key === key);
     if (item) {
         item.cantidad += delta;
-        if (item.cantidad <= 0) carrito = carrito.filter((i) => i.id !== plato.id);
+        if (item.cantidad <= 0) carrito = carrito.filter((i) => i.key !== key);
     } else if (delta > 0) {
-        carrito.push({ id: plato.id, nombre: plato.nombre, precio: plato.precio, cantidad: delta });
+        carrito.push({ key, id: plato.id, nombre: plato.nombre, precio: plato.precio, cantidad: delta, bebida });
     }
     guardarCarrito();
 }
@@ -202,12 +210,13 @@ function renderCarrito() {
         <div class="carrito__item">
             <div>
                 <strong>${esc(i.nombre)}</strong>
+                ${i.bebida ? `<small>🥤 Bebida: ${esc(i.bebida)}</small>` : ""}
                 <small>${precio(i.precio)} c/u · ${precio(i.precio * i.cantidad)}</small>
             </div>
             <div class="stepper">
-                <button type="button" data-carrito="-1" data-id="${i.id}" aria-label="Quitar uno">−</button>
+                <button type="button" data-carrito="-1" data-key="${esc(i.key)}" aria-label="Quitar uno">−</button>
                 <span>${i.cantidad}</span>
-                <button type="button" data-carrito="1" data-id="${i.id}" aria-label="Agregar uno">+</button>
+                <button type="button" data-carrito="1" data-key="${esc(i.key)}" aria-label="Agregar uno">+</button>
             </div>
         </div>`
         )
@@ -231,9 +240,9 @@ $("#overlay").addEventListener("click", cerrarCarrito);
 $("#carrito-items").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-carrito]");
     if (!btn) return;
-    const item = carrito.find((i) => i.id === Number(btn.dataset.id));
+    const item = carrito.find((i) => i.key === btn.dataset.key);
     if (item) {
-        cambiarCantidad(item, Number(btn.dataset.carrito));
+        cambiarCantidad(item, Number(btn.dataset.carrito), item.bebida);
         refrescarSteppersMenu();
     }
 });
@@ -250,10 +259,12 @@ $("#btn-confirmar").addEventListener("click", async () => {
     btn.disabled = true;
     btn.textContent = "Enviando...";
     try {
-        // El body es solo { platos: [{ id, cantidad }] }. Fecha, estado y usuario los pone el back.
+        // El body es { platos: [{ id, cantidad, bebida? }] }. Fecha, estado y usuario los pone el back.
         const pedido = await api("/pedidos", {
             method: "POST",
-            body: { platos: carrito.map(({ id, cantidad }) => ({ id, cantidad })) },
+            body: {
+                platos: carrito.map(({ id, cantidad, bebida }) => (bebida ? { id, cantidad, bebida } : { id, cantidad })),
+            },
         });
         carrito = [];
         guardarCarrito();
@@ -370,6 +381,23 @@ async function vistaMenu() {
     });
 
     $("#lista-platos").addEventListener("click", (e) => {
+        // Combo: se agrega con la bebida elegida en el select de la tarjeta
+        const btnCombo = e.target.closest("[data-agregar-combo]");
+        if (btnCombo) {
+            const plato = platosMenu.find((p) => p.id === Number(btnCombo.dataset.agregarCombo));
+            const select = $(`[data-bebida="${btnCombo.dataset.agregarCombo}"]`);
+            if (!plato || !select) return;
+            if (!select.value) {
+                toast("Elegí una bebida para el combo", "info");
+                select.focus();
+                return;
+            }
+            cambiarCantidad(plato, 1, select.value);
+            refrescarSteppersMenu();
+            toast(`${plato.nombre} con ${select.value} agregado al pedido`, "success");
+            return;
+        }
+
         const btn = e.target.closest("[data-delta]");
         if (!btn) return;
         const plato = platosMenu.find((p) => p.id === Number(btn.dataset.id));
@@ -402,6 +430,11 @@ async function cargarPlatosMenu() {
 
 function controlCantidad(plato) {
     const cant = cantidadEnCarrito(plato.id);
+    // Los combos se agregan de a uno con la bebida elegida; las cantidades se ajustan en el carrito
+    if (plato.tipo === "combo") {
+        return `<button type="button" class="btn btn--primary btn--sm" data-agregar-combo="${plato.id}">
+            Agregar${cant > 0 ? ` (${cant} en el pedido)` : ""}</button>`;
+    }
     if (cant === 0) {
         return `<button type="button" class="btn btn--primary btn--sm" data-delta="1" data-id="${plato.id}">Agregar</button>`;
     }
@@ -418,6 +451,14 @@ const cardPlato = (p) => `
         <span class="plato__tipo">${esc(p.tipo)}</span>
         <h3 class="plato__nombre">${esc(p.nombre)}</h3>
         <p class="plato__desc">${esc(p.descripcion)}</p>
+        ${p.tipo === "combo"
+            ? `<label class="plato__bebida">Bebida
+                <select data-bebida="${p.id}">
+                    <option value="">Elegí tu bebida</option>
+                    ${BEBIDAS_COMBO.map((b) => `<option value="${b}">${b}</option>`).join("")}
+                </select>
+            </label>`
+            : ""}
         <div class="plato__pie">
             <span class="precio">${precio(p.precio)}</span>
             <span data-control="${p.id}">${controlCantidad(p)}</span>
@@ -609,7 +650,7 @@ function cardPedido(p, { admin = false } = {}) {
             ${progreso(p.estado)}
             <ul class="pedido__lista">
                 ${p.platos
-                    .map((pl) => `<li><span>${pl.cantidad} × ${esc(pl.nombre ?? `Plato #${pl.id}`)}</span>
+                    .map((pl) => `<li><span>${pl.cantidad} × ${esc(pl.nombre ?? `Plato #${pl.id}`)}${pl.bebida ? ` <small>(🥤 ${esc(pl.bebida)})</small>` : ""}</span>
                         <span>${pl.precio != null ? precio(pl.precio * pl.cantidad) : ""}</span></li>`)
                     .join("")}
             </ul>

@@ -21,6 +21,7 @@ const formatearPedido = (pedido) => {
         nombre: item.plato?.nombre,
         precio: item.plato?.precio,
         cantidad: item.cantidad,
+        ...(item.bebida ? { bebida: item.bebida } : {}),
     }));
     return {
         id: pedido.id,
@@ -59,23 +60,37 @@ export const getPedidoById = async (id) => {
     return formatearPedido(pedido);
 };
 
-// platos: [{ id, cantidad }] ya validado en el controller
+// platos: [{ id, cantidad, bebida }] ya validado en el controller
 export const createPedido = async (idUsuario, platos) => {
     const usuario = await Usuario.findByPk(idUsuario);
     if (!usuario) throw new HttpError(404, `No existe un usuario con id ${idUsuario}`);
 
-    // Si el mismo plato viene repetido, sumamos las cantidades
-    const cantidades = new Map();
-    for (const { id, cantidad } of platos) {
-        cantidades.set(id, (cantidades.get(id) ?? 0) + cantidad);
-    }
-
-    const ids = [...cantidades.keys()];
-    const existentes = await Plato.findAll({ where: { id: ids }, attributes: ["id"] });
-    const idsExistentes = new Set(existentes.map((p) => p.id));
-    const inexistentes = ids.filter((id) => !idsExistentes.has(id));
+    const ids = [...new Set(platos.map((p) => p.id))];
+    const existentes = await Plato.findAll({ where: { id: ids }, attributes: ["id", "tipo", "nombre"] });
+    const platosPorId = new Map(existentes.map((p) => [p.id, p]));
+    const inexistentes = ids.filter((id) => !platosPorId.has(id));
     if (inexistentes.length > 0) {
         throw new HttpError(404, `No existen platos con id: ${inexistentes.join(", ")}`);
+    }
+
+    // Los combos exigen bebida; el resto de los platos no lleva
+    for (const p of platos) {
+        const plato = platosPorId.get(p.id);
+        if (plato.tipo === "combo" && !p.bebida) {
+            throw new HttpError(400, `El combo "${plato.nombre}" requiere elegir una bebida`);
+        }
+        if (plato.tipo !== "combo" && p.bebida) {
+            throw new HttpError(400, `El plato "${plato.nombre}" no es un combo y no lleva bebida`);
+        }
+    }
+
+    // Si el mismo plato (con la misma bebida) viene repetido, sumamos las cantidades
+    const renglones = new Map();
+    for (const { id, cantidad, bebida } of platos) {
+        const clave = `${id}|${bebida ?? ""}`;
+        const r = renglones.get(clave);
+        if (r) r.cantidad += cantidad;
+        else renglones.set(clave, { id, cantidad, bebida: bebida ?? null });
     }
 
     // Pedido + renglones en una transacción: o se guarda todo o nada
@@ -85,7 +100,12 @@ export const createPedido = async (idUsuario, platos) => {
             { transaction }
         );
         await PlatoXPedido.bulkCreate(
-            ids.map((id) => ({ id_pedido: nuevo.id, id_plato: id, cantidad: cantidades.get(id) })),
+            [...renglones.values()].map(({ id, cantidad, bebida }) => ({
+                id_pedido: nuevo.id,
+                id_plato: id,
+                cantidad,
+                bebida,
+            })),
             { transaction }
         );
         return nuevo;
